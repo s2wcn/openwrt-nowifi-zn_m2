@@ -1,5 +1,5 @@
 #CI项目
-name: ipq60xx-libWrt
+name: ZN_M2-nowifi-libWrt
 
 #CI计划
 on:
@@ -14,24 +14,16 @@ permissions: write-all
 
 #CI任务
 jobs:
-  config:
-    name: ${{matrix.TARGET}}
-    strategy:
-      fail-fast: false
-      #max-parallel: 3
-      matrix:
-        include:
-          - TARGET: ipq60xx-libWrt-nowifi
-            CONFIG_FILE: nowifi.config
-          - TARGET: ipq60xx-libWrt-wifi
-            CONFIG_FILE: wifi.config
+  build:
+    name: ZN_M2-nowifi-libWrt
+
 
 
     #调用公用编译核心WRT-CORE.yml
     uses: ./.github/workflows/core.yml
     with:
       #编译平台
-      TARGET: ${{matrix.TARGET}}
+      TARGET: ZN_M2-nowifi-libWrt
       #源码
       REPO_SOURCE: LibWrt
       #源码地址
@@ -41,5 +33,5 @@ jobs:
       #软件源
       FEEDS_CONF: feeds.conf.default
       #配置文件
-      CONFIG_FILE: ./config/libWrt/${{matrix.CONFIG_FILE}}     
+      CONFIG_FILE: ./config/libWrt/nowifi.config
 

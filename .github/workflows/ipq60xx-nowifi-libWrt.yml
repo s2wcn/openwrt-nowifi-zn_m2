@@ -1,5 +1,5 @@
 #CI项目
-name: ZN_M2-nowifi-libWrt
+name: ipq60xx-nowifi-libWrt
 
 #CI计划
 on:
@@ -15,7 +15,7 @@ permissions: write-all
 #CI任务
 jobs:
   build:
-    name: ZN_M2-nowifi-libWrt
+    name: ipq60xx-nowifi-libWrt
 
 
 
@@ -23,7 +23,7 @@ jobs:
     uses: ./.github/workflows/core.yml
     with:
       #编译平台
-      TARGET: ZN_M2-nowifi-libWrt
+      TARGET: ipq60xx-nowifi-libWrt
       #源码
       REPO_SOURCE: LibWrt
       #源码地址

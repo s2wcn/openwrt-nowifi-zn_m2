@@ -2,6 +2,9 @@
 
 PKG_PATH="$GITHUB_WORKSPACE/openwrt/package/"
 
+
+
+
 #预置HomeProxy数据
 if [ -d *"homeproxy"* ]; then
 	HP_RULE="surge"
@@ -57,3 +60,43 @@ if [ -f "$NSS_FIRMWARE_FILE" ]; then
  	echo 'Fixed: nss-firmware'
  	echo ''
 fi
+
+# 修复 Rust 编译失败
+cd "$pkgPath"
+RUST_FILE=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile")
+if [ -f "$RUST_FILE" ]; then
+	sed -i 's/ci-llvm=true/ci-llvm=false/g' $RUST_FILE
+	echo 'Fixed: rust'
+	echo ''
+fi
+
+# 修复 DiskMan 编译失败
+cd "$pkgPath"
+DM_FILE="./luci-app-diskman/applications/luci-app-diskman/Makefile"
+if [ -f "$DM_FILE" ]; then
+	sed -i 's/fs-ntfs/fs-ntfs3/g' $DM_FILE
+	sed -i '/ntfs-3g-utils /d' $DM_FILE
+	echo 'Fixed: diskman'
+	echo ''
+fi
+
+# 修复 Coremark
+cd "$pkgPath"
+COREMARK_FILE="$WRT_MainPath/feeds/packages/utils/coremark/Makefile"
+if [ -f "$COREMARK_FILE" ]; then
+	sed -i 's/mkdir \$(PKG_BUILD_DIR)\/\$(ARCH)/mkdir -p \$(PKG_BUILD_DIR)\/\$(ARCH)/g' "$COREMARK_FILE"
+	echo 'Fixed: coremark'
+	echo ''
+fi
+
+# 删除 SB 内核回溯移植补丁
+cd "$pkgPath"
+SB_PATCH="../feeds/packages/net/sing-box/patches"
+if [ -d "$SB_PATCH" ]; then
+	rm -rf $SB_PATCH
+	echo "Fixed: sing-box patches"
+	echo ''
+fi
+
+
+

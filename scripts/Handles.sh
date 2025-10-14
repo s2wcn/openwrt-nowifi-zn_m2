@@ -52,6 +52,20 @@ if [ -f "$TS_FILE" ]; then
 	cd $PKG_PATH && echo "tailscale has been fixed!"
 fi
 
+# 修复 luci-app-openvpn-server 配置文件冲突
+OPENVPN_SERVER_MK=$(find ./ -maxdepth 5 -type f -wholename "*/luci-app-openvpn-server/Makefile")
+if [ -f "$OPENVPN_SERVER_MK" ]; then
+    # 用条件判断替换安装 openvpn 配置文件的那一行
+    sed -i '/INSTALL_DATA.*files\/etc\/config\/openvpn.*etc\/config\/openvpn/{
+s|.*|	# 仅在不存在时安装配置文件\\\
+	if [ ! -f \\$(1)/etc/config/openvpn ]; then \\\
+		\\$(INSTALL_DATA) ./files/etc/config/openvpn \\$(1)/etc/config/openvpn; \\\
+	fi|
+}' "$OPENVPN_SERVER_MK"
+    echo "Fixed: luci-app-openvpn-server config conflict"
+    echo ''
+fi
+
 #临时修复 nss-firmware 校验不通过
 cd "$pkgPath"
 NSS_FIRMWARE_FILE="$WRT_MainPath/feeds/nss_packages/firmware/nss-firmware/Makefile"

@@ -159,7 +159,7 @@ jobs:
           tag_name: ${{env.TARGET}}_${{env.FILE_DATE}}
           files: ${{ env.FIRMWARE }}/*
           body: |
-            云编译openwrt固件。
+            云编译zn_m2 nowifi openwrt-6.x最新固件。
             
             源码：${{env.REPO_URL}}
             分支：${{env.REPO_BRANCH}}

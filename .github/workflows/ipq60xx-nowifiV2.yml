@@ -29,7 +29,7 @@ jobs:
       #源码地址
       REPO_URL: https://github.com/LiBwrt/openwrt-6.x
       #源码分支
-      REPO_BRANCH: k6.12-nss
+      REPO_BRANCH: main-nss
       #软件源
       FEEDS_CONF: feeds.conf.default
       #配置文件

@@ -116,9 +116,8 @@ fi
 cd "$PKG_PATH"
 LIBFFI_MK=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/libffi/Makefile")
 if [ -f "$LIBFFI_MK" ]; then
-	# 将引发错误的路径替换为可靠的文件拷贝，防止报错中断编译
-	sed -i 's|$(PKG_BUILD_DIR)/$(TARGET_CROSS:-=)\*/fficonfig.h|$(PKG_INSTALL_DIR)/usr/include/ffi.h|g' "$LIBFFI_MK"
-	sed -i 's|$(PKG_BUILD_DIR)/$(TARGET_CROSS:-=)/fficonfig.h|$(PKG_INSTALL_DIR)/usr/include/ffi.h|g' "$LIBFFI_MK"
+	# 使用正则直接删除包含 fficonfig.h 的行，避免变量通配符不匹配的问题
+	sed -i '/fficonfig.h/d' "$LIBFFI_MK"
 	echo 'Fixed: libffi missing fficonfig.h'
 	echo ''
 fi

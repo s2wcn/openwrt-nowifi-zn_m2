@@ -103,13 +103,22 @@ if [ -f "$COREMARK_FILE" ]; then
 	echo ''
 fi
 
-# 修复 libffi 3.4.7 缺失 fficonfig.h 编译失败的问题
+# 删除 SB 内核回溯移植补丁
+cd "$PKG_PATH"
+SB_PATCH="../feeds/packages/net/sing-box/patches"
+if [ -d "$SB_PATCH" ]; then
+	rm -rf $SB_PATCH
+	echo "Fixed: sing-box patches"
+	echo ''
+fi
+
+# 修复 libffi 3.4.7 缺失 fficonfig.h 编译失败的问题 (终极防断行修复版)
 cd "$PKG_PATH"
 LIBFFI_MK=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/libffi/Makefile")
 if [ -f "$LIBFFI_MK" ]; then
-	# 使用正则直接删除包含 fficonfig.h 的行，避免变量通配符不匹配的问题
-	sed -i '/fficonfig.h/d' "$LIBFFI_MK"
-	echo 'Fixed: libffi missing fficonfig.h'
+	# 精准匹配包含 fficonfig.h 的参数块，将其替换为绝对存在的 ffi.h 路径，防止多行 \ 被破坏
+	sed -i 's|[^[:space:]]*fficonfig\.h|$(PKG_INSTALL_DIR)/usr/include/ffi.h|g' "$LIBFFI_MK"
+	echo 'Fixed: libffi missing fficonfig.h by replacing target file'
 	echo ''
 fi
 

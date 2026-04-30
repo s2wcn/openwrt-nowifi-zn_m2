@@ -128,3 +128,11 @@ rm -rf "$WRT_MainPath/feeds/packages/lang/golang"
 git clone https://github.com/sbwml/packages_lang_golang -b 25.x "$WRT_MainPath/feeds/packages/lang/golang"
 echo 'Updated: golang'
 echo ''
+
+# 自动应用仓库内的补丁文件
+cd "$GITHUB_WORKSPACE/openwrt"
+if [ -f "$GITHUB_WORKSPACE/patch/0001-fix-upnp.patch" ]; then
+	patch -p1 < "$GITHUB_WORKSPACE/patch/0001-fix-upnp.patch"
+	echo 'Applied: 0001-fix-upnp.patch'
+	echo ''
+fi

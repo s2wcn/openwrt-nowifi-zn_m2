@@ -50,12 +50,7 @@ jobs:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6 GB
           tool-cache: true
-
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
           android: true
           dotnet: true
           haskell: true
@@ -63,7 +58,7 @@ jobs:
           swap-storage: true
 
       - name: Checkout
-        uses: actions/checkout@v3.1.0
+        uses: actions/checkout@v4
 
       - name: Initialization environment
         env:
@@ -102,8 +97,8 @@ jobs:
 
       - name: Update Feeds
         run: |
+          [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] && cp $GITHUB_WORKSPACE/$FEEDS_CONF openwrt/feeds.conf.default
           cd openwrt
-
           ./scripts/feeds update -a
           ./scripts/feeds install -a        
 
@@ -121,7 +116,6 @@ jobs:
         run: |
           [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
           cd ./openwrt
-
           $GITHUB_WORKSPACE/scripts/Settings.sh         
 
       - name: Download package
@@ -148,7 +142,7 @@ jobs:
         if: steps.compile.outputs.status == 'success'  && !cancelled()
         run: |
           cd openwrt/bin/targets/*/*
-          # rm -rf packages
+          rm -rf packages
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
 

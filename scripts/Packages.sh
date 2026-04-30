@@ -8,7 +8,8 @@ UPDATE_PACKAGE() {
 	local PKG_SPECIAL=$4
 	local REPO_NAME=$(echo $PKG_REPO | cut -d '/' -f 2)
 
-	rm -rf $(find ./ ../feeds/luci/ ../feeds/packages/ -maxdepth 3 -type d -iname "*$PKG_NAME*" -prune)
+	# 将 maxdepth 3 修改为 5，防止遗漏深层级目录的旧包
+	rm -rf $(find ./ ../feeds/luci/ ../feeds/packages/ -maxdepth 5 -type d -iname "*$PKG_NAME*" -prune)
 
 	git clone --depth=1 --single-branch --branch $PKG_BRANCH "https://github.com/$PKG_REPO.git"
 
@@ -47,7 +48,8 @@ UPDATE_PACKAGE "luci-app-tailscale" "asvow/luci-app-tailscale" "main"
 UPDATE_VERSION() {
 	local PKG_NAME=$1
 	local PKG_MARK=${2:-not}
-	local PKG_FILES=$(find ./ ../feeds/packages/ -maxdepth 3 -type f -wholename "*/$PKG_NAME/Makefile")
+	# 将 maxdepth 3 修改为 5，确保能找到 xray-core 等深层级包的 Makefile
+	local PKG_FILES=$(find ./ ../feeds/packages/ -maxdepth 5 -type f -wholename "*/$PKG_NAME/Makefile")
 
 	echo " "
 

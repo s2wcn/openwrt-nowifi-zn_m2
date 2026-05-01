@@ -94,23 +94,6 @@ if [ -f "$DM_FILE" ]; then
 	echo ''
 fi
 
-# 修复 Coremark
-cd "$PKG_PATH"
-COREMARK_FILE="$WRT_MainPath/feeds/packages/utils/coremark/Makefile"
-if [ -f "$COREMARK_FILE" ]; then
-	sed -i 's/mkdir \$(PKG_BUILD_DIR)\/\$(ARCH)/mkdir -p \$(PKG_BUILD_DIR)\/\$(ARCH)/g' "$COREMARK_FILE"
-	echo 'Fixed: coremark'
-	echo ''
-fi
-
-# 删除 SB 内核回溯移植补丁
-cd "$PKG_PATH"
-SB_PATCH="../feeds/packages/net/sing-box/patches"
-if [ -d "$SB_PATCH" ]; then
-	rm -rf $SB_PATCH
-	echo "Fixed: sing-box patches"
-	echo ''
-fi
 
 # 修复 libffi 3.4.7 缺失 fficonfig.h 编译失败的问题 (终极防断行修复版)
 cd "$PKG_PATH"

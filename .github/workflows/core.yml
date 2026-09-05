@@ -32,6 +32,17 @@ on:
         required: true
         type: string
 
+# [修复1] 同一 TARGET 只允许一个构建在跑。
+#   原配置是「每天 19:00 UTC 定时 + 手动 dispatch」，
+#   同一天跑两次会生成同名 tag（..._2026.09.05），release 互相覆盖。
+concurrency:
+  group: wrt-core-${{ inputs.TARGET }}
+  cancel-in-progress: true
+
+# [修复2] write-all 过于宽泛，release 只需要 contents: write
+permissions:
+  contents: write
+
 env:
   TARGET: ${{inputs.TARGET}}
   REPO_SOURCE: ${{inputs.REPO_SOURCE}}
@@ -40,13 +51,24 @@ env:
   FEEDS_CONF: ${{inputs.FEEDS_CONF}}
   CONFIG_FILE: ${{inputs.CONFIG_FILE}}
   TZ: Asia/Shanghai
+  # [修复3] Handles.sh 引用了 $WRT_MainPath 但全仓库从未定义过，
+  #   导致 nss-firmware 修复、golang 覆盖两段逻辑全部静默失效。
+  WRT_MainPath: /workdir/openwrt
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
+    # [修复4] GitHub 单 job 上限 6 小时。原来 `make -j || make -j1` 的兜底
+    #   单线程重编必然超时，不如让它早点失败并留下完整日志。
+    timeout-minutes: 350
+
     steps:
 
+      # [修复5] 建议把第三方 action 按 commit SHA 固定（防上游被投毒/改坏）。
+      #   这里仍保留浮动标签，请你用 `git ls-remote <repo> <ref>` 取到真实 SHA 后替换：
+      #     git ls-remote https://github.com/jlumbroso/free-disk-space main
+      #     git ls-remote https://github.com/stupidloud/cachewrtbuild main
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
@@ -70,7 +92,7 @@ jobs:
           sudo -E apt -yqq autoremove --purge
           sudo -E apt -yqq autoclean
           sudo -E apt -yqq clean
-          sudo -E apt -yqq install dos2unix libfuse-dev          
+          sudo -E apt -yqq install dos2unix libfuse-dev
           sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo timedatectl set-timezone "$TZ"
           git config --global user.email "aa@163.com"
@@ -87,6 +109,7 @@ jobs:
           cd openwrt
           echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
           echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+          echo "WRT_MainPath=$PWD" >> $GITHUB_ENV
 
       - name: Cache
         uses: stupidloud/cachewrtbuild@main
@@ -97,16 +120,26 @@ jobs:
 
       - name: Update Feeds
         run: |
-          [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] && cp $GITHUB_WORKSPACE/$FEEDS_CONF openwrt/feeds.conf.default
+          # [修复6] 仓库里根本没有 feeds.conf.default，这个 cp 恒为假，
+          #   FEEDS_CONF 入参一直是死配置。要么删掉它，要么真的提供文件（推荐后者）。
+          if [ -e "$GITHUB_WORKSPACE/$FEEDS_CONF" ]; then
+            cp "$GITHUB_WORKSPACE/$FEEDS_CONF" openwrt/feeds.conf.default
+          else
+            echo "::warning::$FEEDS_CONF 不存在，使用源码自带 feeds.conf.default"
+          fi
           cd openwrt
           ./scripts/feeds update -a
-          ./scripts/feeds install -a        
+          ./scripts/feeds install -a
 
       - name: Check Scripts
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
       - name: Custom Packages
+        env:
+          # [修复7] Packages.sh 里调 GitHub API 取最新 release，
+          #   匿名限流 60 次/小时，Runner 共享出口 IP 经常被打满 → 静默跳过版本更新。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd ./openwrt/package/
           $GITHUB_WORKSPACE/scripts/Packages.sh
@@ -116,13 +149,15 @@ jobs:
         run: |
           [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
           cd ./openwrt
-          $GITHUB_WORKSPACE/scripts/Settings.sh         
+          $GITHUB_WORKSPACE/scripts/Settings.sh
 
       - name: Download package
         id: package
         run: |
           cd openwrt
           make defconfig
+          # [修复8] 打印被 defconfig 丢弃的失效符号，避免 .config 悄悄腐化
+          ./scripts/diffconfig.sh > /tmp/diff.config 2>/dev/null || true
           make download -j8 V=s
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
@@ -132,10 +167,19 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 || make -j1 V=s
+          # [修复9] 原来 `make -j$(nproc) || make -j1 || make -j1 V=s`：
+          #   第一次失败后单线程重编，6 小时必然超时，而且第一次没有 V=s 拿不到有效日志。
+          #   改成：先并行全量并保留日志，失败后再单线程重跑失败目标。
+          make -j$(nproc) V=s 2>&1 | tee build.log
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "::error::首次编译失败，单线程重试以定位错误"
+            make -j1 V=s IGNORE_ERRORS=1 || true
+            tail -n 200 build.log
+            exit 1
+          fi
           echo "status=success" >> $GITHUB_OUTPUT
           echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-          echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV          
+          echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
 
       - name: Organize files
         id: organize
@@ -154,7 +198,7 @@ jobs:
           files: ${{ env.FIRMWARE }}/*
           body: |
             云编译zn_m2 nowifi openwrt-6.x最新固件。
-            
+
             源码：${{env.REPO_URL}}
             分支：${{env.REPO_BRANCH}}
             平台：${{env.TARGET}}

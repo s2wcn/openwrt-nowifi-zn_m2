@@ -2,25 +2,50 @@
 name: ipq60xx-nowifiV2-libWrt
 
 #CI计划
+# ⚠️ GitHub Actions 的 cron 一律是 UTC 时间，与仓库/账号时区无关。
+#    0 19 * * *  = UTC 19:00 = 北京时间「次日凌晨 03:00」
+#    若想在北京时间 23:00 编译，改成 cron: 0 15 * * *
+#    （对照：Auto-Clean.yml 用的 0 15 1/5 * * 就是北京时间 23:00）
 on:
   workflow_dispatch:
   schedule:
     - cron: 0 19 * * *
 
 #CI权限
-permissions: write-all
+# [修复1] write-all 会额外授予 packages / id-token / actions 等本流程完全用不到的写权限。
+#   本流程只需要创建 Release 和上传产物 → contents: write 足够。
+#   注意：调用方（caller）的权限是被调用方的上限，官方文档：
+#   "The GITHUB_TOKEN permissions passed from the caller workflow can be
+#    only downgraded (not elevated) by the called workflow."
+permissions:
+  contents: write
 
 #CI任务
 jobs:
   build:
     name: ipq60xx-nowifiV2-libWrt
 
+    # [修复2] 并发控制必须放在调用方这里。
+    #   官方文档把 jobs.<job_id>.concurrency 明确列为「调用 reusable workflow 的 job」
+    #   所支持的关键字；而如果调用方和被调用方（core.yml）同时设置 concurrency、
+    #   且 cancel-in-progress: true、group 相同，会导致自己把正在跑的自己取消掉。
+    #   所以这里设、core.yml 里不设（已在 core.yml 注释中标明）。
+    #   group 用 github.workflow（= 本文件名 ipq60xx-nowifiV2-libWrt），
+    #   将来你再复制一份做别的机型时，两边天然互不干扰、可以并行。
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: true
 
+    # [修复3] 显式声明被调用方拿到的 GITHUB_TOKEN 权限。
+    #   官方说明：调用 job 若不指定 permissions，被调用工作流只会拿到默认权限，
+    #   可能导致 core.yml 里创建 Release 的步骤 403 失败。
+    permissions:
+      contents: write
 
     #调用公用编译核心WRT-CORE.yml
     uses: ./.github/workflows/core.yml
     with:
-      #编译平台
+      #编译平台（仅用于 Release 的 tag 名与说明文字，不影响编译目标）
       TARGET: ipq60xx-nowifiV2-libWrt
       #源码
       REPO_SOURCE: LibWrt
@@ -29,6 +54,15 @@ jobs:
       #源码分支
       REPO_BRANCH: main-nss
       #软件源
+      # ⚠️ 仓库里并没有 feeds.conf.default 这个文件，core.yml 里
+      #    [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] 恒为假 → 该入参从未生效，
+      #    实际一直用的是 LiBwrt 源码自带的 feeds.conf.default。
+      #    要么删掉这一行，要么真的在仓库根目录建一个 feeds.conf.default（二选一）。
       FEEDS_CONF: feeds.conf.default
       #配置文件
       CONFIG_FILE: ./config/libWrt/nowifiV2.config
+
+    # 说明：core.yml 里用的是内置的 secrets.GITHUB_TOKEN，
+    # 它在被调用工作流中自动可用，因此这里【不需要】写 secrets: inherit。
+    # 只有当将来要传自定义 secret（例如上传到网盘、发通知）时才需要加：
+    #   secrets: inherit

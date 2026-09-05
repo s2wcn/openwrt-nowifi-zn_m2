@@ -32,14 +32,18 @@ on:
         required: true
         type: string
 
-# [修复1] 同一 TARGET 只允许一个构建在跑。
-#   原配置是「每天 19:00 UTC 定时 + 手动 dispatch」，
-#   同一天跑两次会生成同名 tag（..._2026.09.05），release 互相覆盖。
-concurrency:
-  group: wrt-core-${{ inputs.TARGET }}
-  cancel-in-progress: true
+# [修复1] 并发控制必须放在「调用方」ipq60xx-nowifiV2.yml 的 job 上，不能放这里。
+#   官方文档明确警告：如果调用方和被调用方同时设置 concurrency 且
+#   cancel-in-progress: true、group 值相同，会导致运行中的工作流把自己取消掉。
+#   而且 called workflow 里 ${{ github.workflow }} 返回的是「调用方」的名字，
+#   两边都写 ${{ github.workflow }} 会撞成同一个 group。
+#   所以这里不设，统一由 caller 的 jobs.build.concurrency 控制。
 
-# [修复2] write-all 过于宽泛，release 只需要 contents: write
+# [修复2] write-all 过于宽泛，release 只需要 contents: write。
+#   注意：权限只能被降低不能提升（官方文档：
+#   "The GITHUB_TOKEN permissions passed from the caller workflow can be
+#    only downgraded (not elevated) by the called workflow."），
+#   所以调用方给 write-all 时，这里声明 contents: write 会生效。
 permissions:
   contents: write
 

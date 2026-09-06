@@ -6,7 +6,8 @@ UPDATE_PACKAGE() {
 	local PKG_NAME=$1
 	local PKG_REPO=$2
 	local PKG_BRANCH=$3
-	local PKG_SPECIAL=$4
+	# [修复7] set -u 下 $4 未传会崩；用默认值兜底
+	local PKG_SPECIAL=${4:-}
 	local REPO_NAME=$(echo $PKG_REPO | cut -d '/' -f 2)
 
 	# [修复1] 用「后缀匹配」 *PKG_NAME 取代「包含匹配」 *PKG_NAME*

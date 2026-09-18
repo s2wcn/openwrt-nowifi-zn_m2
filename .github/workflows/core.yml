@@ -141,12 +141,17 @@ jobs:
 
       - name: Custom Packages
         env:
-          # [修复7] Packages.sh 里调 GitHub API 取最新 release，
+          # [修复7] Packages.sh / GoToolchain.sh 都要调 GitHub API 取最新 release，
           #   匿名限流 60 次/小时，Runner 共享出口 IP 经常被打满 → 静默跳过版本更新。
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd ./openwrt/package/
           $GITHUB_WORKSPACE/scripts/Packages.sh
+          # [修复11 2026-09-18] 按 xray / sing-box 的 go.mod 要求自动升级 Go 工具链
+          #   （从 scripts/golangX.Y 副本或 immortalwrt master 引入 golang 包，
+          #    切换 feeds 的 GO_DEFAULT_VERSION，并注册 package/feeds 软链）。
+          #   必须排在 Packages.sh 之后（组件版本已确定）且在任何 make 之前。
+          $GITHUB_WORKSPACE/scripts/GoToolchain.sh
           $GITHUB_WORKSPACE/scripts/Handles.sh
 
       - name: Custom Settings
@@ -200,6 +205,18 @@ jobs:
           path: openwrt/build.log
           if-no-files-found: ignore
           retention-days: 7
+
+      # [修复12 2026-09-18] 把实际编入固件的关键组件版本打出来。
+      #   以后不必再翻两小时日志去猜「最新 xray 到底进没进去」，一眼可见。
+      - name: Verify components
+        if: steps.compile.outputs.status == 'success' && !cancelled()
+        run: |
+          cd openwrt
+          echo "=========== Go 工具链 ==========="
+          grep -m1 '^GO_DEFAULT_VERSION:=' feeds/packages/lang/golang/golang-values.mk || true
+          ls -d feeds/packages/lang/golang/golang1.* 2>/dev/null || true
+          echo "=========== 关键组件包 ==========="
+          find bin/packages -type f \( -name 'xray-core*' -o -name 'sing-box*' -o -name 'luci-app-passwall*' -o -name 'geoview*' -o -name 'v2ray-geodata*' \) -printf '%f\n' 2>/dev/null | sort || true
 
       - name: Organize files
         id: organize

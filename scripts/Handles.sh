@@ -148,22 +148,22 @@ if [ -f "$LIBFFI_MK" ]; then
 fi
 
 # =============================================================================
-# 更新 Golang —— 建议【整段删除】
+# 更新 Golang —— 已由 scripts/GoToolchain.sh 接管，此处【保持禁用】
 # -----------------------------------------------------------------------------
-# 实测（2026-09-05）：
-#   * immortalwrt/packages 默认 Go  = 1.27   （feeds/packages/lang/golang/golang-values.mk）
-#   * sbwml/packages_lang_golang 25.x = 1.25.14
-#   * sbwml/packages_lang_golang 26.x = 1.26.8
-#   * xray-core >= v26.1 的 go.mod 要求 go >= 1.26
-#   * sing-box  v1.14.0  的 go.mod 要求 go >= 1.25.5
+# 【2026-09-18 更新】不要在这里做任何"覆盖 golang 目录"的操作：
+#   * 本源码线 feeds/packages@84bd8638（immortalwrt openwrt-25.12 线）默认 Go = 1.26.8，
+#     且该分支**没有** golang1.27 包；只有 master 才有。
+#   * scripts/GoToolchain.sh 会读 xray / sing-box 最新版的 go.mod 要求，
+#     自动引入对应的 golangX.Y 包并切换 GO_DEFAULT_VERSION（当前 = 1.27）。
+#     它跑在 Packages.sh 之后、Handles.sh 之前。
+#   * 如果在这里再覆盖一次 golang 目录，会与 GoToolchain.sh 的改动互相抵消。
 #
-# 也就是说：原脚本用 25.x 覆盖，会把 Go 从 1.27 降到 1.25.14，
-# xray-core 会直接编译失败（go.mod requires go >= 1.26）。
-# feeds 自带的 1.27 已经比 sbwml 的任何分支都新，这段覆盖没有任何收益，只有风险。
+# 历史教训（2026-09-05）：原脚本用 sbwml 25.x 覆盖，把 Go 降到 1.25.14，
+#   而 xray-core 的 go.mod 要求 >= 1.26 → 必然编译失败。
 #
-# 如果你确实需要固定到某个版本（例如上游 feed 哪天回退了），用下面的写法，
-# 并且只能用 26.x 及以上的分支：
-#
+# 如果你确实需要固定某个 Go 版本（例如上游 feed 哪天回退了），请改
+# GoToolchain.sh，而不是在这里覆盖：
+# =============================================================================
 # cd "$PKG_PATH"
 # GOLANG_DIR="$WRT_MainPath/feeds/packages/lang/golang"
 # if [ -d "$GOLANG_DIR" ]; then

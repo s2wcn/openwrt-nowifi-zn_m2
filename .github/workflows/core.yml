@@ -171,19 +171,35 @@ jobs:
         run: |
           cd openwrt
           echo -e "$(nproc) thread compile"
-          # [修复9] 原来 `make -j$(nproc) || make -j1 || make -j1 V=s`：
-          #   第一次失败后单线程重编，6 小时必然超时，而且第一次没有 V=s 拿不到有效日志。
-          #   改成：先并行全量并保留日志，失败后再单线程重跑失败目标。
-          make -j$(nproc) V=s 2>&1 | tee build.log
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "::error::首次编译失败，单线程重试以定位错误"
-            make -j1 V=s IGNORE_ERRORS=1 || true
-            tail -n 200 build.log
+          # [修复9 2026-09-18] 原写法 `make -j$(nproc) V=s 2>&1 | tee build.log`：
+          #   V=s 会产生上百 MB 输出，GitHub 在 ~4MB 处直接截断，
+          #   真正的报错行被吃掉，页面只剩 "This step has been truncated due to its large size."
+          #   —— 上一轮构建失败时就是这样，完全无法定位。
+          #   改为：只写文件（不进 stdout），失败时再定向打印错误上下文；
+          #   完整日志通过下面的 artifact 步骤上传。
+          if ! make -j$(nproc) V=s >build.log 2>&1; then
+            echo "::error::编译失败。完整日志见本次运行的 build-log 产物；下方为错误摘录。"
+            echo "=========== 1. 错误行 ==========="
+            grep -nE '(^|[[:space:]])(Error [0-9]|ERROR:|error:|fatal error:|collect2:|undefined reference|go: go\.mod requires|Hash mismatch|No rule to make target|make\[[0-9]+\]: \*\*\*)' build.log | tail -n 40 || true
+            echo "=========== 2. 失败的 make 目标 ==========="
+            grep -oE 'make(\[[0-9]+\])?: \*\*\* \[[^]]+\]' build.log | tail -n 20 || true
+            echo "=========== 3. 日志末尾 80 行 ==========="
+            tail -n 80 build.log
             exit 1
           fi
           echo "status=success" >> $GITHUB_OUTPUT
           echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
           echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+
+      # [修复10 2026-09-18] 失败也把完整 build.log 带出来，否则 2 小时的编译日志随 runner 销毁
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: openwrt/build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Organize files
         id: organize

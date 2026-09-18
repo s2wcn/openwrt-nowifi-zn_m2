@@ -54,7 +54,7 @@ TRACKED="XTLS/Xray-core:true SagerNet/sing-box:false"
 command -v jq >/dev/null 2>&1 || { echo "::error::缺少 jq，无法解析 GitHub API"; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 版本比较（与 Packages.sh 同一套实现，保持行为一致）
+# 版本比较（Packages.sh 已不再做 Go 兼容过滤，此实现现为本脚本独立使用）
 # ---------------------------------------------------------------------------
 norm_ver() {
 	local v=$1 a b c
@@ -84,15 +84,17 @@ version_lt() {
 # 上游查询
 # ---------------------------------------------------------------------------
 gh_curl() {
-	# 注意：token 为空时绝不能发 "Authorization: Bearer " 头，
+	# 注意 1：token 为空时绝不能发 "Authorization: Bearer " 头，
 	#   GitHub 会判为 Bad credentials 返回 401，curl -f 直接失败 → 整条链路静默废掉。
+	# 注意 2：--compressed 让 GitHub 返回 gzip，Xray 的 release 列表实测传输耗时 7s → 3s，
+	#   同时显著降低「大响应被中途掐断 → JSON 截断」的风险（与 Packages.sh 同一处理）。
 	if [ -n "${GITHUB_TOKEN:-}" ]; then
-		curl -sfL --max-time 30 \
+		curl -sfL --compressed --max-time 60 \
 			-H "Authorization: Bearer $GITHUB_TOKEN" \
 			-H "X-GitHub-Api-Version: 2022-11-28" \
 			"$1"
 	else
-		curl -sfL --max-time 30 \
+		curl -sfL --compressed --max-time 60 \
 			-H "X-GitHub-Api-Version: 2022-11-28" \
 			"$1"
 	fi

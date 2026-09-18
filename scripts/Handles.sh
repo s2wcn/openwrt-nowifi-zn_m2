@@ -48,8 +48,8 @@ if [ -f "$PW_FILE" ]; then
 	sed -i '/config PACKAGE_$(PKG_NAME)_INCLUDE_ShadowsocksR/,/default n/d' $PW_FILE
 	sed -i '/Shadowsocks_NONE/d; /Shadowsocks_Libev/d; /ShadowsocksR/d' $PW_FILE
 
-	if grep -q "Shadowsocks" "$PW_FILE"; then
-		echo "::warning::passwall Makefile 仍存在 Shadowsocks 残留，请检查 sed 规则是否过期"
+	if grep -qE "Shadowsocks_Libev|Shadowsocks_NONE|ShadowsocksR" "$PW_FILE"; then
+		echo "::warning::passwall Makefile 仍存在待清理的 Shadowsocks 条目，sed 规则可能已过期"
 	fi
 
 	cd "$PKG_PATH" && echo "passwall has been fixed!"
@@ -91,12 +91,30 @@ fi
 cd "$PKG_PATH"
 NSS_FIRMWARE_FILE="$WRT_MainPath/feeds/nss_packages/firmware/nss-firmware/Makefile"
 if [ -f "$NSS_FIRMWARE_FILE" ]; then
-	# [修复3] 先确认旧哈希确实存在再替换，否则上游更新后这条 sed 会变成无意义的 no-op
+	# [修复3 2026-09-18] 旧哈希补丁只对旧版上游有效。
+	#   现上游（qosmio/nss-packages @ NSS-12.5-K6.x）已换成 PKG_VERSION=2025.05.01，
+	#   其 PKG_HASH 实测与真实文件完全一致 —— 根本不需要打补丁。
+	#   所以这里不再"盲改哈希"，而是改成【实测校验】：下载真实源码包比对，
+	#   不一致就立刻报错，而不是等 1.5 小时编译到该包才炸。
 	if grep -q "3ec87f221e8905d4b6b8b3d207b7f7c4666c3bc8db7c1f06d4ae2e78f863b8f4" "$NSS_FIRMWARE_FILE"; then
 		sed -i 's/3ec87f221e8905d4b6b8b3d207b7f7c4666c3bc8db7c1f06d4ae2e78f863b8f4/881cbf75efafe380b5adc91bfb1f68add5e29c9274eb950bb1e815c7a3622807/g' "$NSS_FIRMWARE_FILE"
-		echo 'Fixed: nss-firmware'
+		echo 'Fixed: nss-firmware (旧哈希已替换)'
 	else
-		echo "::warning::nss-firmware 旧哈希未命中，补丁可能已过期，请人工确认"
+		NSS_VER=$(grep -m1 '^PKG_VERSION:=' "$NSS_FIRMWARE_FILE" | cut -d= -f2 | tr -d ' \r')
+		NSS_HASH=$(grep -m1 '^PKG_HASH:=' "$NSS_FIRMWARE_FILE" | cut -d= -f2 | tr -d ' \r')
+		NSS_URL=$(grep -m1 '^PKG_SOURCE_URL:=' "$NSS_FIRMWARE_FILE" | cut -d= -f2 | tr -d ' \r' | sed "s/\$(PKG_VERSION)/$NSS_VER/g")
+		NSS_SRC=$(grep -m1 '^PKG_SOURCE:=' "$NSS_FIRMWARE_FILE" | cut -d= -f2 | tr -d ' \r' | sed "s/\$(PKG_VERSION)/$NSS_VER/g; s/\$(PKG_NAME)/nss-firmware/g")
+		if [ -n "$NSS_VER" ] && [ -n "$NSS_URL" ] && [ -n "$NSS_SRC" ]; then
+			REAL_HASH=$(curl -sfL --max-time 240 "$NSS_URL/$NSS_SRC" | sha256sum | cut -b -64)
+			if [ "$REAL_HASH" = "$NSS_HASH" ]; then
+				echo "nss-firmware $NSS_VER 上游哈希实测一致，无需打补丁"
+			else
+				echo "::error::nss-firmware 哈希不一致！Makefile=$NSS_HASH 实际=$REAL_HASH —— 不修会导致编译失败"
+				exit 1
+			fi
+		else
+			echo "::warning::nss-firmware 无法解析 PKG_VERSION/SOURCE_URL/SOURCE，跳过校验"
+		fi
 	fi
 	echo ''
 fi

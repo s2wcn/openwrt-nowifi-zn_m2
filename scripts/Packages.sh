@@ -2,23 +2,26 @@
 set -u
 
 # =============================================================================
-# 【2026-09-18 修复】Go 工具链版本感知
+# 【2026-09-18 修订】xray / sing-box 永远取最新，Go 工具链由 GoToolchain.sh 顶上去
 # -----------------------------------------------------------------------------
-# 事故：xray-core 被升到 v26.9.9（go.mod 要求 go 1.27），而本源码线的 Go 工具链是 1.26，
-#       且 golang-package.mk 里写死 GOTOOLCHAIN=local（不会自动下载新工具链），
-#       于是 xray-core 编译直接失败 → Compile the firmware 步骤 exit 1。
+# 事故回顾：xray-core 升到 v26.9.9（go.mod 要求 go 1.27），而本源码线（LiBwrt
+#   25.12-nss，packages feed 钉在 immortalwrt/packages@84bd8638）的 Go 工具链只有
+#   1.26.8，且 golang-package.mk 写死 GOTOOLCHAIN=local（不会自动下载新工具链）
+#   → xray-core 编译失败。
+#
+# 第一版修复是「降级 xray 到 v26.7.28」，但那与「必须用最新 xray」的目标冲突。
+# 现改为：本脚本只负责选版本（永远取最新），Go 工具链交给 scripts/GoToolchain.sh
+#   按 xray / sing-box 的 go.mod 要求自动升级（会引入 golang1.27 包并切换默认 Go）。
+#
+# 因此这里对 xray / sing-box 关闭 Go 兼容性过滤（第 3 个参数传 no-go-filter）；
+#   其余包（tailscale 等）仍保留过滤，避免在未升级 Go 时编出半成品。
 #
 # 事实依据（均可复现）：
-#   * LiBwrt/openwrt-6.x @25.12-nss 把 packages feed 钉在 immortalwrt/packages@84bd8638
-#     （openwrt-25.12 分支）→ golang-values.mk: GO_DEFAULT_VERSION:=1.26
-#     该分支没有 golang1.27 包；只有 immortalwrt/packages@master 才把默认 Go 提到 1.27。
 #   * golang-package.mk:224  GOTOOLCHAIN=local
 #   * Xray-core: v26.4.25 / v26.5.9 / v26.6.27 / v26.7.28 声明 go 1.26；
-#                v26.9.8 / v26.9.9 起声明 go 1.27  ← 跨过了 25.12 线的能力上限
-#
-# 对策：不再「无脑取最新」，而是由新到旧扫描，取第一个 go.mod 声明 <= 本 feed 工具链的版本。
-#       这样 xray 会停在 v26.7.28（真正的上限），sing-box 取 v1.14.1（要求 1.25.5，满足）。
-#       Go 版本发生变化时会自动跟随，不需要你手工维护版本号。
+#                v26.9.8 / v26.9.9 起声明 go 1.27
+#   * go1.27.0.src.tar.gz 实测 sha256 与 immortalwrt/packages@master 的
+#     golang1.27/Makefile PKG_HASH 完全一致（见 GoToolchain.sh 注释）
 # =============================================================================
 
 GOLANG_BASE="../feeds/packages/lang/golang"
@@ -43,7 +46,7 @@ detect_golang_version() {
 
 GOLANG_MAX=$(detect_golang_version)
 if [ -n "$GOLANG_MAX" ]; then
-	echo "::notice::本源码线 Go 工具链 = $GOLANG_MAX（Go 组件将按此上限筛选版本）"
+	echo "::notice::本源码线 Go 工具链 = $GOLANG_MAX（仅用于 tailscale 等非强制最新包的兼容过滤；xray/sing-box 由 GoToolchain.sh 负责升级 Go）"
 else
 	echo "::warning::未能识别 Go 工具链版本（$GOLANG_BASE 不存在），跳过 Go 兼容性过滤"
 fi
@@ -126,9 +129,11 @@ UPDATE_PACKAGE "luci-app-tailscale" "asvow/luci-app-tailscale" "main"
 
 
 # 更新软件包版本
+# $1 包名 / $2 是否允许预发布（true|not）/ $3 是否按 Go 工具链过滤（yes|no-go-filter）
 UPDATE_VERSION() {
 	local PKG_NAME=$1
 	local PKG_MARK=${2:-not}
+	local PKG_GO_FILTER=${3:-yes}
 	local PKG_FILES=$(find ./ ../feeds/packages/ -maxdepth 5 -type f -wholename "*/$PKG_NAME/Makefile")
 
 	echo " "
@@ -146,21 +151,36 @@ UPDATE_VERSION() {
 		# [修复4] 带 Token 调用 GitHub API。
 		#   匿名调用限流 60 次/小时，Runner 共享出口 IP 经常被打满，
 		#   原代码失败后 PKG_VER 为空 → 静默跳过更新，你以为是最新的其实不是。
-		local PKG_API=$(curl -sfL \
-			-H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
-			-H "X-GitHub-Api-Version: 2022-11-28" \
-			"https://api.github.com/repos/$PKG_REPO/releases?per_page=50")
+		# [修订 2026-09-18] token 为空时绝不能发 "Authorization: Bearer "，
+		#   那会被判 Bad credentials 返回 401，curl -f 直接失败；此时应完全不带该头。
+		local PKG_API
+		if [ -n "${GITHUB_TOKEN:-}" ]; then
+			PKG_API=$(curl -sfL --max-time 30 \
+				-H "Authorization: Bearer ${GITHUB_TOKEN}" \
+				-H "X-GitHub-Api-Version: 2022-11-28" \
+				"https://api.github.com/repos/$PKG_REPO/releases?per_page=50")
+		else
+			PKG_API=$(curl -sfL --max-time 30 \
+				-H "X-GitHub-Api-Version: 2022-11-28" \
+				"https://api.github.com/repos/$PKG_REPO/releases?per_page=50")
+		fi
 		if [ -z "$PKG_API" ]; then
 			echo "::warning::[$PKG_NAME] GitHub API 请求失败（限流或网络），跳过"
 			continue
 		fi
 
-		# [修复6' 2026-09-18] 由新到旧扫描，取第一个「go.mod 要求 <= 本 feed 工具链」的版本。
-		#   这是本次编译失败的根治点：原写法直接取最新（xray v26.9.9，要求 go 1.27），
-		#   而工具链只有 1.26 → 必然编译失败。
+		# [修订 2026-09-18] 选版本策略：
+		#   * no-go-filter（xray / sing-box）：直接取列表中最新的一个，所需 Go 由
+		#     GoToolchain.sh 负责顶上去 —— 满足「必须用最新版」的硬需求。
+		#   * 默认 yes：由新到旧扫描，取第一个 go.mod 要求 <= 本 feed 工具链的版本，
+		#     避免在 Go 未升级时编出半成品（tailscale 等走这条路）。
 		local PKG_VER=""
 		local CANDIDATE REQ
 		for CANDIDATE in $(echo "$PKG_API" | jq -r "map(select(.prerelease|$PKG_MARK)) | .[].tag_name"); do
+			if [ "$PKG_GO_FILTER" = "no-go-filter" ]; then
+				PKG_VER=$CANDIDATE
+				break
+			fi
 			REQ=$(go_mod_requires "$PKG_REPO" "$CANDIDATE")
 			if [ -z "$REQ" ] || [ -z "$GOLANG_MAX" ] || version_le "$REQ" "$GOLANG_MAX"; then
 				PKG_VER=$CANDIDATE
@@ -196,13 +216,15 @@ UPDATE_VERSION() {
 	done
 }
 
-#UPDATE_VERSION "软件包名" "是否允许预发布版，true，可选，默认只取正式版"
-UPDATE_VERSION "sing-box"
+#UPDATE_VERSION "软件包名" "是否允许预发布版，true，可选，默认只取正式版" "是否按 Go 工具链过滤，no-go-filter，可选"
+#
+# [修订 2026-09-18] xray / sing-box 关闭 Go 兼容性过滤 → 永远取最新版。
+#   所需 Go 工具链由紧随其后的 scripts/GoToolchain.sh 自动升级（引入 golang1.27 并切换
+#   默认 Go），因此这里不需要再为「能不能编」而牺牲版本。
+#   Xray 从 v26.4 起把 release 全部标记为 prerelease，故必须传 "true"，
+#   否则会永远停在 v26.3.27（与 feed 同版，"更新"形同虚设）。
+UPDATE_VERSION "sing-box" "not" "no-go-filter"
+UPDATE_VERSION "xray-core" "true" "no-go-filter"
 
-# [修复6 2026-09-18] Xray 从 v26.4 起把 release 全部标记为 prerelease，
-#   只取正式版会永远停在 v26.3.27（与 feed 一致，"更新"形同虚设）。
-#   允许 prerelease 后，靠上面的 Go 上限过滤自动停在 v26.7.28
-#   —— 这是 25.12 源码线（Go 1.26）能编译的最新 xray。
-#   当 LiBwrt 将来把 feed 的 Go 提到 1.27 时，这里会自动前进到 v26.9.x，无需改代码。
-UPDATE_VERSION "xray-core" "true"
+# tailscale 保留 Go 过滤：它不是必追最新的组件，Go 不满足时停在可编译版本更稳
 UPDATE_VERSION "tailscale"

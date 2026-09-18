@@ -2,100 +2,80 @@
 set -u
 
 # =============================================================================
-# 【2026-09-18 修订】xray / sing-box 永远取最新，Go 工具链由 GoToolchain.sh 顶上去
+# 自定义包克隆 + 版本更新（2026-09-18 精简版：只保留 passwall 组）
 # -----------------------------------------------------------------------------
-# 事故回顾：xray-core 升到 v26.9.9（go.mod 要求 go 1.27），而本源码线（LiBwrt
-#   25.12-nss，packages feed 钉在 immortalwrt/packages@84bd8638）的 Go 工具链只有
-#   1.26.8，且 golang-package.mk 写死 GOTOOLCHAIN=local（不会自动下载新工具链）
-#   → xray-core 编译失败。
+# 【本次精简依据】config/libWrt/nowifiV2.config 实测（CONFIG_ALL 未开，未选中的包
+#   不会进固件），逐符号核对结果：
 #
-# 第一版修复是「降级 xray 到 v26.7.28」，但那与「必须用最新 xray」的目标冲突。
-# 现改为：本脚本只负责选版本（永远取最新），Go 工具链交给 scripts/GoToolchain.sh
-#   按 xray / sing-box 的 go.mod 要求自动升级（会引入 golang1.27 包并切换默认 Go）。
+#   ✅ 会编进固件（必须克隆）：
+#        luci-app-passwall = y            ← Openwrt-Passwall/openwrt-passwall
+#        xray-core         = y
+#        sing-box          = y
+#        geoview           = y
+#        chinadns-ng       = y
+#        dns2socks         = y
+#        microsocks        = y
+#        tcping            = y
+#        xray-plugin       = y            ← 以上 8 个均由 openwrt-passwall-packages 提供
 #
-# 因此这里对 xray / sing-box 关闭 Go 兼容性过滤（第 3 个参数传 no-go-filter）；
-#   其余包（tailscale 等）仍保留过滤，避免在未升级 Go 时编出半成品。
+#   ❌ 未选中（已删除克隆，纯属死重量，且每个都是「上游删分支就卡死构建」的隐患）：
+#        argon / kucat / nikki / alist / mosdns / vnt / easytier / gecoosac /
+#        luci-app-tailscale / passwall2
+#      实测：luci-app-passwall2 <未出现在配置中>；tailscale / mosdns 均为 not set；
+#            luci-theme-argon not set；其余 <未出现在配置中>。
+#      需要某个包时，把对应 UPDATE_PACKAGE 行加回来即可（分支名先在 GitHub 上确认）。
 #
-# 事实依据（均可复现）：
-#   * golang-package.mk:224  GOTOOLCHAIN=local
-#   * Xray-core: v26.4.25 / v26.5.9 / v26.6.27 / v26.7.28 声明 go 1.26；
-#                v26.9.8 / v26.9.9 起声明 go 1.27
-#   * go1.27.0.src.tar.gz 实测 sha256 与 immortalwrt/packages@master 的
-#     golang1.27/Makefile PKG_HASH 完全一致（见 GoToolchain.sh 注释）
+#   另注：luci-app-ddns-go = y，但它来自 immortalwrt/luci feed（实测 HTTP 200），
+#         不需要克隆，故不在此脚本中。
+#
+# 【历史事故回顾】
+#   1) UPDATE_PACKAGE "passwall" 的 rm 通配符是 "*passwall*"，会命中并删除刚克隆的
+#      ./passwall-packages → xray-core / sing-box / geoview 全部丢失。已改为后缀匹配
+#      "*passwall"，并把 passwall-packages 放到最后克隆（双保险）。
+#   2) xray-core 曾被升到 v26.9.9（go.mod 要求 go 1.27），而本源码线
+#      （LiBwrt 25.12-nss，packages feed 钉在 immortalwrt/packages@84bd8638）的 Go
+#      工具链只有 1.26.8，且 golang-package.mk 写死 GOTOOLCHAIN=local（不会自动下载
+#      新工具链）→ xray-core 编译失败。
+#      现在：本脚本只负责「永远取最新版」，Go 工具链交给紧随其后的
+#      scripts/GoToolchain.sh 按 xray / sing-box 的 go.mod 要求自动升级。
 # =============================================================================
 
-GOLANG_BASE="../feeds/packages/lang/golang"
-
-# 取本源码线真实的 Go 工具链版本（major.minor.patch）。
-# 注意：golang-values.mk 的 GO_DEFAULT_VERSION 只有 major.minor（如 1.26），
-#       真正的补丁号在 lang/golang/golang1.26/Makefile 的 GO_VERSION_PATCH（如 8）里，
-#       合起来才是实际工具链 1.26.8 —— 漏掉补丁号会导致 tailscale 这类
-#       "要求 go 1.26.6" 的包被误判为不可用。
-detect_golang_version() {
-	local mm patch
-	[ -f "$GOLANG_BASE/golang-values.mk" ] || return 0
-	mm=$(grep -m1 '^GO_DEFAULT_VERSION:=' "$GOLANG_BASE/golang-values.mk" 2>/dev/null | cut -d= -f2 | tr -d ' \r')
-	[ -n "$mm" ] || return 0
-	patch=$(grep -m1 '^GO_VERSION_PATCH:=' "$GOLANG_BASE/golang$mm/Makefile" 2>/dev/null | cut -d= -f2 | tr -d ' \r')
-	if [ -n "$patch" ]; then
-		printf '%s.%s' "$mm" "$patch"
-	else
-		printf '%s' "$mm"
-	fi
-}
-
-GOLANG_MAX=$(detect_golang_version)
-if [ -n "$GOLANG_MAX" ]; then
-	echo "::notice::本源码线 Go 工具链 = $GOLANG_MAX（仅用于 tailscale 等非强制最新包的兼容过滤；xray/sing-box 由 GoToolchain.sh 负责升级 Go）"
-else
-	echo "::warning::未能识别 Go 工具链版本（$GOLANG_BASE 不存在），跳过 Go 兼容性过滤"
-fi
-
-# 读取某个 tag 的 go.mod 里声明的 Go 版本；非 Go 项目返回空
-go_mod_requires() {
-	local REPO=$1 TAG=$2
-	curl -sfL --max-time 20 "https://raw.githubusercontent.com/$REPO/$TAG/go.mod" 2>/dev/null \
-		| awk '/^go /{print $2; exit}'
-}
-
-# 版本号归一化：1.27 与 1.27.0 视为同一个版本
-norm_ver() {
-	local v=$1 a b c
-	case "$v" in
-		[0-9]*.[0-9]*) ;;
-		*) printf '%s' "$v"; return ;;
-	esac
-	IFS=. read -r a b c <<<"$v"
-	printf '%s.%s.%s' "${a:-0}" "${b:-0}" "${c:-0}"
-}
-
-# $1 <= $2 ?（用 sort -V 做版本比较，不依赖 dpkg，便于本地单测）
-version_le() {
-	local n1 n2
-	n1=$(norm_ver "$1")
-	n2=$(norm_ver "$2")
-	[ "$(printf '%s\n%s\n' "$n1" "$n2" | sort -V | head -n 1)" = "$n1" ]
-}
-
 # 安装和更新软件包
+# $1 匹配关键字（必须与克隆出的目录名后缀一致）
+# $2 仓库 owner/name
+# $3 分支
+# $4 可选：pkg = 从大杂烩仓库里只提取匹配的包目录；name = 把目录重命名为关键字
 UPDATE_PACKAGE() {
 	local PKG_NAME=$1
 	local PKG_REPO=$2
 	local PKG_BRANCH=$3
-	# [修复7] set -u 下 $4 未传会崩；用默认值兜底
+	# set -u 下 $4 未传会崩，用默认值兜底
 	local PKG_SPECIAL=${4:-}
 	local REPO_NAME=$(echo $PKG_REPO | cut -d '/' -f 2)
 
 	# [修复1] 用「后缀匹配」 *PKG_NAME 取代「包含匹配」 *PKG_NAME*
-	#   原写法下 UPDATE_PACKAGE "passwall" 会命中并删除刚克隆的 ./passwall-packages，
-	#   导致 openwrt-passwall-packages 里的 sing-box / xray-core / geoview / geodata 全部丢失。
 	#   -iname "*passwall"  命中 luci-app-passwall   （这是本意）
 	#   -iname "*passwall"  不命中 passwall-packages （这是修复点）
-	rm -rf $(find ./ ../feeds/luci/ ../feeds/packages/ -maxdepth 5 -type d -iname "*$PKG_NAME" -prune)
+	# [优化] 原来是 rm -rf $(find ...)：无匹配时 find 返回空 → rm 报 "missing operand"
+	#   虽不致命但污染日志。改用 -exec，天然处理「零匹配」。
+	find ./ ../feeds/luci/ ../feeds/packages/ -maxdepth 5 -type d -iname "*$PKG_NAME" -prune \
+		-exec rm -rf {} + 2>/dev/null || true
 
-	# [修复2] 克隆失败必须让 CI 变红，否则上游改分支名/删仓库后会静默编译出缺件固件
-	git clone --depth=1 --single-branch --branch "$PKG_BRANCH" "https://github.com/$PKG_REPO.git" \
-		|| { echo "::error::git clone $PKG_REPO ($PKG_BRANCH) failed"; exit 1; }
+	# [修复2] 克隆失败必须让 CI 变红，否则上游改分支名/删仓库后会静默编译出缺件固件。
+	# [修复14] 失败时顺便列出该仓库【现有的分支】，让「填哪个分支」不用再猜。
+	#   事故背景：kucat 的 js 分支被上游删除 → 只报 "Remote branch js not found"，
+	#   还得手工去 GitHub 网页翻。现在日志里直接给出候选分支。
+	if ! git clone --depth=1 --single-branch --branch "$PKG_BRANCH" "https://github.com/$PKG_REPO.git"; then
+		echo "::error::git clone $PKG_REPO ($PKG_BRANCH) failed —— 分支或仓库可能已被上游删除/改名"
+		echo "---------- $PKG_REPO 现有分支 ----------"
+		git ls-remote --heads "https://github.com/$PKG_REPO.git" 2>/dev/null \
+			| sed 's#.*refs/heads/#  #' || echo "  （无法读取，仓库可能已删除或私有）"
+		echo "---------- 处理办法 ----------"
+		echo "  在 scripts/Packages.sh 里把这一行改成上面存在的分支："
+		echo "    UPDATE_PACKAGE \"$PKG_NAME\" \"$PKG_REPO\" \"<以上某个分支>\""
+		echo "  注意第 1 个参数是匹配关键字（如 passwall），必须与包目录名后缀一致。"
+		exit 1
+	fi
 
 	if [[ $PKG_SPECIAL == "pkg" ]]; then
 		cp -rf $(find ./$REPO_NAME/*/ -maxdepth 3 -type d -iname "*$PKG_NAME*" -prune) ./
@@ -105,35 +85,24 @@ UPDATE_PACKAGE() {
 	fi
 }
 
-#UPDATE_PACKAGE "包名" "项目地址" "项目分支" "pkg/name，可选，pkg为从大杂烩中单独提取包名插件；name为重命名为包名"
-UPDATE_PACKAGE "argon" "jerrykuku/luci-theme-argon" "master"
-UPDATE_PACKAGE "kucat" "sirpdboy/luci-theme-kucat" "js"
-
-UPDATE_PACKAGE "nikki" "nikkinikki-org/OpenWrt-nikki" "main"
-
-# [修复3] passwall / passwall2 先跑，passwall-packages 最后跑（纵深防御，配合修复1 双保险）
+# -----------------------------------------------------------------------------
+# 自定义包克隆（只保留 passwall 组）
+# -----------------------------------------------------------------------------
+# 顺序很关键：passwall-packages 必须最后克隆。
+#   若先克隆它，紧接着的 UPDATE_PACKAGE "passwall" 的 rm 通配符（后缀匹配）虽已修好
+#   不会误删，但把 packages 放最后可做到「纵深防御」——任何未来的通配符改动都不会波及它。
 UPDATE_PACKAGE "passwall" "Openwrt-Passwall/openwrt-passwall" "main" "pkg"
-UPDATE_PACKAGE "passwall2" "Openwrt-Passwall/openwrt-passwall2" "main" "pkg"
 UPDATE_PACKAGE "passwall-packages" "Openwrt-Passwall/openwrt-passwall-packages" "main"
-
-UPDATE_PACKAGE "alist" "sbwml/luci-app-alist" "main"
-UPDATE_PACKAGE "mosdns" "sbwml/luci-app-mosdns" "v5"
-UPDATE_PACKAGE "vnt" "lazyoop/networking-artifact" "main" "pkg"
-UPDATE_PACKAGE "easytier" "lazyoop/networking-artifact" "main" "pkg"
-
-UPDATE_PACKAGE "luci-app-gecoosac" "lyin888/openwrt-gecoosac" "main"
-UPDATE_PACKAGE "luci-app-tailscale" "asvow/luci-app-tailscale" "main"
-
-# UPDATE_PACKAGE "luci-app-ddns-go" "sirpdboy/luci-app-ddns-go" "main"
-# UPDATE_PACKAGE "luci-app-msd_lite" "ximiTech/luci-app-msd_lite" "main"
 
 
 # 更新软件包版本
-# $1 包名 / $2 是否允许预发布（true|not）/ $3 是否按 Go 工具链过滤（yes|no-go-filter）
+# $1 包名（= feeds 里的包目录名）
+# $2 是否允许预发布：true | not（默认 not，只取正式版）
+# 说明：不再做 Go 兼容性过滤。xray / sing-box 的所需 Go 由 scripts/GoToolchain.sh
+#       负责顶上去（Go 不够时它会明确报错退出，不会静默编出旧组件）。
 UPDATE_VERSION() {
 	local PKG_NAME=$1
 	local PKG_MARK=${2:-not}
-	local PKG_GO_FILTER=${3:-yes}
 	local PKG_FILES=$(find ./ ../feeds/packages/ -maxdepth 5 -type f -wholename "*/$PKG_NAME/Makefile")
 
 	echo " "
@@ -151,45 +120,56 @@ UPDATE_VERSION() {
 		# [修复4] 带 Token 调用 GitHub API。
 		#   匿名调用限流 60 次/小时，Runner 共享出口 IP 经常被打满，
 		#   原代码失败后 PKG_VER 为空 → 静默跳过更新，你以为是最新的其实不是。
-		# [修订 2026-09-18] token 为空时绝不能发 "Authorization: Bearer "，
+		# [修订] token 为空时绝不能发 "Authorization: Bearer "，
 		#   那会被判 Bad credentials 返回 401，curl -f 直接失败；此时应完全不带该头。
-		local PKG_API
-		if [ -n "${GITHUB_TOKEN:-}" ]; then
-			PKG_API=$(curl -sfL --max-time 30 \
-				-H "Authorization: Bearer ${GITHUB_TOKEN}" \
-				-H "X-GitHub-Api-Version: 2022-11-28" \
-				"https://api.github.com/repos/$PKG_REPO/releases?per_page=50")
-		else
-			PKG_API=$(curl -sfL --max-time 30 \
-				-H "X-GitHub-Api-Version: 2022-11-28" \
-				"https://api.github.com/repos/$PKG_REPO/releases?per_page=50")
-		fi
+		#
+		# [修复16 2026-09-18] 响应截断防护（实测踩到的真 bug）：
+		#   Xray-core 的 release body 极长，per_page=50 时响应达 6.77 MB；
+		#   配合 --max-time 30，在出口带宽抖动的 Runner 上会中途断流 → JSON 被截断
+		#   → jq 报 "Unfinished string at EOF" → PKG_VER 为空 → 静默跳过更新，
+		#   最终固件里的 xray 还是旧版（正是最该避免的失败模式）。
+		#   四道防护：
+		#     1) per_page 降到 20（2.7 MB，含最新版足够）——实测 Xray 第一条即 v26.9.9
+		#     2) --compressed：GitHub 支持 gzip，实测传输耗时 7s → 3s
+		#     3) max-time 放宽到 60
+		#     4) 解析前先用 jq -e 校验 JSON 完整性，不完整则重试（最多 3 轮）
+		#   注意只保留「外层重试」这一层，不再叠加 curl --retry，否则最坏 3×3 次
+		#   请求会把这一步拖到十几分钟。
+		local PKG_API=""
+		local ATTEMPT
+		for ATTEMPT in 1 2 3; do
+			if [ -n "${GITHUB_TOKEN:-}" ]; then
+				PKG_API=$(curl -sfL --compressed --max-time 60 \
+					-H "Authorization: Bearer ${GITHUB_TOKEN}" \
+					-H "X-GitHub-Api-Version: 2022-11-28" \
+					"https://api.github.com/repos/$PKG_REPO/releases?per_page=20")
+			else
+				PKG_API=$(curl -sfL --compressed --max-time 60 \
+					-H "X-GitHub-Api-Version: 2022-11-28" \
+					"https://api.github.com/repos/$PKG_REPO/releases?per_page=20")
+			fi
+			# JSON 完整性校验：截断的响应也能过 curl 的退出码，必须让 jq 先验一遍
+			if [ -n "$PKG_API" ] && printf '%s' "$PKG_API" | jq -e . >/dev/null 2>&1; then
+				break
+			fi
+			PKG_API=""
+			if [ "$ATTEMPT" -lt 3 ]; then
+				echo "  [$PKG_NAME] 第 $ATTEMPT 次获取失败或响应不完整，3 秒后重试…"
+				sleep 3
+			fi
+		done
 		if [ -z "$PKG_API" ]; then
-			echo "::warning::[$PKG_NAME] GitHub API 请求失败（限流或网络），跳过"
+			# 说明：这里用 warning 而非 error，是不想让一次网络抖动直接掐掉整条
+			# 2 小时的编译；真正的硬闸门在 GoToolchain.sh —— 它取不到组件 go.mod
+			# 要求时会 ::error:: 退出，因此不会出现「Go 升了但组件没升」的静默错配。
+			echo "::warning::[$PKG_NAME] GitHub API 请求失败或响应被截断（已重试 3 次），本次跳过版本更新"
 			continue
 		fi
 
-		# [修订 2026-09-18] 选版本策略：
-		#   * no-go-filter（xray / sing-box）：直接取列表中最新的一个，所需 Go 由
-		#     GoToolchain.sh 负责顶上去 —— 满足「必须用最新版」的硬需求。
-		#   * 默认 yes：由新到旧扫描，取第一个 go.mod 要求 <= 本 feed 工具链的版本，
-		#     避免在 Go 未升级时编出半成品（tailscale 等走这条路）。
-		local PKG_VER=""
-		local CANDIDATE REQ
-		for CANDIDATE in $(echo "$PKG_API" | jq -r "map(select(.prerelease|$PKG_MARK)) | .[].tag_name"); do
-			if [ "$PKG_GO_FILTER" = "no-go-filter" ]; then
-				PKG_VER=$CANDIDATE
-				break
-			fi
-			REQ=$(go_mod_requires "$PKG_REPO" "$CANDIDATE")
-			if [ -z "$REQ" ] || [ -z "$GOLANG_MAX" ] || version_le "$REQ" "$GOLANG_MAX"; then
-				PKG_VER=$CANDIDATE
-				break
-			fi
-			echo "  跳过 $CANDIDATE（go.mod 要求 go $REQ > 工具链 $GOLANG_MAX）"
-		done
+		# 取列表中第一个符合 prerelease 策略的版本（= 最新）
+		local PKG_VER=$(echo "$PKG_API" | jq -r "map(select(.prerelease|$PKG_MARK)) | first | .tag_name" | tr -d '\r')
 
-		if [ -z "$PKG_VER" ]; then
+		if [ -z "$PKG_VER" ] || [ "$PKG_VER" = "null" ]; then
 			echo "::warning::[$PKG_NAME] 未匹配到可用 release（$PKG_REPO）"
 			continue
 		fi
@@ -216,15 +196,12 @@ UPDATE_VERSION() {
 	done
 }
 
-#UPDATE_VERSION "软件包名" "是否允许预发布版，true，可选，默认只取正式版" "是否按 Go 工具链过滤，no-go-filter，可选"
+#UPDATE_VERSION "软件包名" "是否允许预发布版，true，可选，默认只取正式版"
 #
-# [修订 2026-09-18] xray / sing-box 关闭 Go 兼容性过滤 → 永远取最新版。
-#   所需 Go 工具链由紧随其后的 scripts/GoToolchain.sh 自动升级（引入 golang1.27 并切换
-#   默认 Go），因此这里不需要再为「能不能编」而牺牲版本。
-#   Xray 从 v26.4 起把 release 全部标记为 prerelease，故必须传 "true"，
-#   否则会永远停在 v26.3.27（与 feed 同版，"更新"形同虚设）。
-UPDATE_VERSION "sing-box" "not" "no-go-filter"
-UPDATE_VERSION "xray-core" "true" "no-go-filter"
-
-# tailscale 保留 Go 过滤：它不是必追最新的组件，Go 不满足时停在可编译版本更稳
-UPDATE_VERSION "tailscale"
+# 只更新 passwall 依赖链上的两个 Go 组件：
+#   * xray-core 必须传 "true"：Xray 从 v26.4 起把 release 全部标记为 prerelease，
+#     只取正式版会永远停在 v26.3.27（与 feed 同版，"更新"形同虚设）。
+#   * sing-box 只取正式版，避免把 alpha 引入生产固件。
+# （passwall 本体走 git 克隆拿 main 分支最新，无需走 release 更新。）
+UPDATE_VERSION "sing-box" "not"
+UPDATE_VERSION "xray-core" "true"
